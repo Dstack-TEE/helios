@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use url::Url;
 
-use alloy::consensus::proofs::{calculate_transaction_root, calculate_withdrawals_root};
+use alloy::consensus::proofs::calculate_transaction_root;
 use alloy::consensus::transaction::SignerRecoverable;
 use alloy::consensus::{Header as ConsensusHeader, Transaction as TxTrait};
 use alloy::eips::eip4895::{Withdrawal, Withdrawals};
-use alloy::primitives::{b256, fixed_bytes, Address, Bloom, BloomInput, B256, U256};
+use alloy::primitives::{b256, fixed_bytes, Address, Bloom, B256, U256};
 use alloy::rlp::Decodable;
 use alloy::rpc::types::{
     Block, EIP1186AccountProofResponse, Header, Transaction as EthTransaction,
@@ -159,7 +159,9 @@ impl Inner {
                 let age = now.saturating_sub(timestamp);
                 let number = payload.block_number;
 
-                if let Ok(block) = payload_to_block(payload) {
+                {
+                    let block =
+                        payload_to_block(payload, B256::from_slice(&commitment.data[..32]))?;
                     self.latest_block = Some(block.header.number);
                     _ = self.block_send.send(block).await;
 
@@ -168,8 +170,6 @@ impl Inner {
                         number,
                         age.as_secs()
                     );
-                } else {
-                    tracing::warn!("invalid block received");
                 }
             }
         }
@@ -271,7 +271,10 @@ fn verify_unsafe_signer(config: Config, signer: Arc<Mutex<Address>>) {
     });
 }
 
-fn payload_to_block(value: ExecutionPayload) -> Result<Block<Transaction>> {
+fn payload_to_block(
+    value: ExecutionPayload,
+    parent_beacon_block_root: B256,
+) -> Result<Block<Transaction>> {
     let empty_nonce = fixed_bytes!("0000000000000000");
     let empty_uncle_hash =
         b256!("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347");
@@ -283,7 +286,7 @@ fn payload_to_block(value: ExecutionPayload) -> Result<Block<Transaction>> {
         .map(|(i, tx_bytes)| {
             let tx_bytes = tx_bytes.to_vec();
             let mut tx_bytes_slice = tx_bytes.as_slice();
-            let tx_envelope = OpTxEnvelope::decode(&mut tx_bytes_slice).unwrap();
+            let tx_envelope = OpTxEnvelope::decode(&mut tx_bytes_slice)?;
             let base_fee = tx_envelope.effective_gas_price(Some(value.base_fee_per_gas.to()));
             let recovered = tx_envelope.try_into_recovered()?;
 
@@ -323,9 +326,9 @@ fn payload_to_block(value: ExecutionPayload) -> Result<Block<Transaction>> {
     let txs_root = calculate_transaction_root(&tx_envelopes);
 
     let withdrawals: Vec<Withdrawal> = value.withdrawals.into_iter().map(|w| w.into()).collect();
-    let withdrawals_root = calculate_withdrawals_root(&withdrawals);
+    let withdrawals_root = value.withdrawals_root;
 
-    let logs_bloom: Bloom = Bloom::from(BloomInput::Raw(&value.logs_bloom));
+    let logs_bloom: Bloom = Bloom::from_slice(&value.logs_bloom);
 
     let consensus_header = ConsensusHeader {
         parent_hash: value.parent_hash,
@@ -345,11 +348,18 @@ fn payload_to_block(value: ExecutionPayload) -> Result<Block<Transaction>> {
         base_fee_per_gas: Some(value.base_fee_per_gas.to::<u64>()),
         blob_gas_used: Some(value.blob_gas_used),
         excess_blob_gas: Some(value.excess_blob_gas),
-        parent_beacon_block_root: None,
+        parent_beacon_block_root: Some(parent_beacon_block_root),
         extra_data: value.extra_data.to_vec().into(),
-        requests_hash: None,
+        requests_hash: Some(b256!(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        )),
         logs_bloom,
     };
+
+    eyre::ensure!(
+        consensus_header.hash_slow() == value.block_hash,
+        "payload block hash mismatch"
+    );
 
     let header = Header {
         hash: value.block_hash,
@@ -360,4 +370,39 @@ fn payload_to_block(value: ExecutionPayload) -> Result<Block<Transaction>> {
 
     Ok(Block::new(header, BlockTransactions::Full(txs))
         .with_withdrawals(Some(Withdrawals::new(withdrawals))))
+}
+
+#[cfg(test)]
+mod phala_tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    #[test]
+    fn authentic_phala_payload_reconstructs_header() {
+        let commitment: SequencerCommitment = serde_json::from_str(include_str!(
+            "../tests/fixtures/phala-signed-commitment.json"
+        ))
+        .unwrap();
+        let signer = address!("F63ccBA1929a3eC32248B26c5a22D7C4c9bd3EEC");
+        commitment.verify(signer, 2035).unwrap();
+        assert!(commitment.verify(signer, 8453).is_err());
+        assert!(commitment.verify(Address::ZERO, 2035).is_err());
+        let payload = ExecutionPayload::try_from(&commitment).unwrap();
+        let parent_root = B256::from_slice(&commitment.data[..32]);
+        let block = payload_to_block(payload.clone(), parent_root).unwrap();
+        assert_eq!(block.header.number, 5569808);
+        let truncated = snap::raw::Encoder::new().compress_vec(&[0; 10]).unwrap();
+        assert!(SequencerCommitment::new(&truncated).is_err());
+        let mut empty = commitment.clone();
+        empty.data = Default::default();
+        assert!(ExecutionPayload::try_from(&empty).is_err());
+        let mut forged = commitment.clone();
+        let mut data = forged.data.to_vec();
+        data[0] ^= 1;
+        forged.data = data.into();
+        assert!(forged.verify(signer, 2035).is_err());
+        let mut corrupt = payload;
+        corrupt.state_root = B256::ZERO;
+        assert!(payload_to_block(corrupt, parent_root).is_err());
+    }
 }

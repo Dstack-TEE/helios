@@ -7,11 +7,10 @@ use eyre::Result;
 use libp2p::{
     futures::StreamExt,
     gossipsub::{self, IdentTopic, Message, MessageId},
-    mplex::MplexConfig,
     multiaddr::Protocol,
     noise, ping,
     swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
-    tcp, Multiaddr, PeerId, Swarm, Transport,
+    tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
 };
 use libp2p_identity::Keypair;
 use sha2::{Digest, Sha256};
@@ -61,9 +60,28 @@ impl GossipService {
             .listen_on(multiaddr)
             .map_err(|_| eyre::eyre!("swarm listen failed"))?;
 
+        let peers = std::env::var("OP_NODE_P2P_STATIC").unwrap_or_default();
+        let static_peers = peers
+            .split(',')
+            .filter(|peer| !peer.is_empty())
+            .map(str::parse::<Multiaddr>)
+            .collect::<Result<Vec<_>, _>>()?;
+
         tokio::spawn(async move {
+            let mut reconnect = tokio::time::interval(Duration::from_secs(5));
             loop {
                 select! {
+                    _ = reconnect.tick() => {
+                        for peer in &static_peers {
+                            if let Some(Protocol::P2p(id)) = peer.iter().last() {
+                                if let Ok(id) = PeerId::from_multihash(id) {
+                                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&id);
+                                    if swarm.is_connected(&id) { continue; }
+                                }
+                            }
+                            let _ = swarm.dial(peer.clone());
+                        }
+                    },
                     peer = peer_recv.recv() => {
                         if let Some(peer) = peer {
                             tracing::info!("adding peer");
@@ -72,8 +90,9 @@ impl GossipService {
                         }
                     },
                     event = swarm.select_next_some() => {
-                        if let SwarmEvent::Behaviour(event) = event {
-                            event.handle(&mut swarm, &self.block_handler);
+                        match event {
+                            SwarmEvent::Behaviour(event) => event.handle(&mut swarm, &self.block_handler),
+                            other => tracing::info!("swarm event: {:?}", other),
                         }
                     },
                 }
@@ -96,31 +115,17 @@ fn socket_to_multiaddr(socket: SocketAddr) -> Multiaddr {
 
 /// Computes the message ID of a `gossipsub` message
 fn compute_message_id(msg: &Message) -> MessageId {
-    let mut decoder = snap::raw::Decoder::new();
-    let id = match decoder.decompress_vec(&msg.data) {
-        Ok(data) => {
-            let domain_valid_snappy: Vec<u8> = vec![0x1, 0x0, 0x0, 0x0];
-            let mut hasher = Sha256::new();
-            hasher.update(
-                [domain_valid_snappy.as_slice(), data.as_slice()]
-                    .concat()
-                    .as_slice(),
-            );
-            hasher.finalize()[..20].to_vec()
-        }
-        Err(_) => {
-            let domain_invalid_snappy: Vec<u8> = vec![0x0, 0x0, 0x0, 0x0];
-            let mut hasher = Sha256::new();
-            hasher.update(
-                [domain_invalid_snappy.as_slice(), msg.data.as_slice()]
-                    .concat()
-                    .as_slice(),
-            );
-            hasher.finalize()[..20].to_vec()
-        }
-    };
-
-    MessageId(id)
+    let decoded = snap::raw::decompress_len(&msg.data)
+        .ok()
+        .filter(|len| *len <= 10 * 1024 * 1024)
+        .and_then(|_| snap::raw::Decoder::new().decompress_vec(&msg.data).ok());
+    let topic = msg.topic.as_str().as_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update([u8::from(decoded.is_some()), 0, 0, 0]);
+    hasher.update((topic.len() as u64).to_le_bytes());
+    hasher.update(topic);
+    hasher.update(decoded.as_deref().unwrap_or(&msg.data));
+    MessageId(hasher.finalize()[..20].to_vec())
 }
 
 /// Creates the libp2p [Swarm]
@@ -128,7 +133,7 @@ fn create_swarm(keypair: Keypair, handler: &BlockHandler) -> Result<Swarm<Behavi
     let transport = tcp::tokio::Transport::new(tcp::Config::default())
         .upgrade(libp2p::core::upgrade::Version::V1Lazy)
         .authenticate(noise::Config::new(&keypair)?)
-        .multiplex(MplexConfig::default())
+        .multiplex(yamux::Config::default())
         .boxed();
 
     let behaviour = Behaviour::new(handler)?;
@@ -155,6 +160,7 @@ impl Behaviour {
         let ping = ping::Behaviour::default();
 
         let gossipsub_config = gossipsub::ConfigBuilder::default()
+            .max_transmit_size(10 * 1024 * 1024)
             .mesh_n(8)
             .mesh_n_low(6)
             .mesh_n_high(12)
@@ -190,6 +196,7 @@ impl Behaviour {
 }
 
 /// The type of message received
+#[derive(Debug)]
 enum Event {
     /// Represents a [ping::Event]
     #[allow(dead_code)]

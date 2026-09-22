@@ -34,6 +34,8 @@ pub struct ForkSchedule {
     pub holocene_timestamp: u64,
     pub isthmus_timestamp: u64,
     pub jovian_timestamp: u64,
+    #[serde(default = "disabled_fork")]
+    pub karst_timestamp: u64,
 }
 
 impl Default for ForkSchedule {
@@ -70,6 +72,7 @@ impl Default for ForkSchedule {
             holocene_timestamp: u64::MAX,
             isthmus_timestamp: u64::MAX,
             jovian_timestamp: u64::MAX,
+            karst_timestamp: u64::MAX,
         }
     }
 }
@@ -84,4 +87,8 @@ impl ForkSchedule {
             3338477 // Cancun
         }
     }
+}
+
+fn disabled_fork() -> u64 {
+    u64::MAX
 }

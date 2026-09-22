@@ -45,6 +45,7 @@ pub struct NetworkConfig {
 
 #[derive(Copy, Clone, Debug)]
 pub enum Network {
+    Phala,
     OpMainnet,
     Base,
     BaseSepolia,
@@ -56,6 +57,7 @@ pub enum Network {
 impl Display for Network {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Phala => f.write_str("phala"),
             Self::OpMainnet => f.write_str("op-mainnet"),
             Self::Base => f.write_str("base"),
             Self::BaseSepolia => f.write_str("base-sepolia"),
@@ -71,6 +73,7 @@ impl FromStr for Network {
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
+            "phala" => Ok(Self::Phala),
             "op-mainnet" => Ok(Self::OpMainnet),
             "base" => Ok(Self::Base),
             "base-sepolia" => Ok(Self::BaseSepolia),
@@ -85,6 +88,30 @@ impl FromStr for Network {
 impl From<Network> for NetworkConfig {
     fn from(value: Network) -> Self {
         match value {
+            Network::Phala => NetworkConfig {
+                consensus_rpc: Some("http://127.0.0.1:3000".parse().unwrap()),
+                chain: ChainConfig {
+                    chain_id: 2035,
+                    unsafe_signer: address!("F63ccBA1929a3eC32248B26c5a22D7C4c9bd3EEC"),
+                    system_config_contract: address!("eBf5859b7646ca9cf8A981613569bF28394F2571"),
+                    eth_network: EthNetwork::Mainnet,
+                    forks: ForkSchedule {
+                        bedrock_timestamp: 0,
+                        regolith_timestamp: 0,
+                        canyon_timestamp: 0,
+                        delta_timestamp: 0,
+                        ecotone_timestamp: 0,
+                        fjord_timestamp: 0,
+                        granite_timestamp: 1736272801,
+                        holocene_timestamp: 1736445601,
+                        isthmus_timestamp: 1746806401,
+                        jovian_timestamp: 1769491801,
+                        karst_timestamp: 1787673601,
+                        ..Default::default()
+                    },
+                },
+                verify_unsafe_signer: false,
+            },
             Network::OpMainnet => NetworkConfig {
                 consensus_rpc: Some(
                     "https://op-mainnet.operationsolarstorm.org"
