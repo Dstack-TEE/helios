@@ -76,13 +76,13 @@ impl GossipService {
         tokio::spawn(async move {
             let mut reconnect = tokio::time::interval(Duration::from_secs(5));
             let mut last_activity = tokio::time::Instant::now();
-            let mut accepted_messages = self.block_handler.accepted_messages();
+            let mut latest_block = self.block_handler.latest_block();
             loop {
                 select! {
                     _ = reconnect.tick() => {
-                        let current_accepted_messages = self.block_handler.accepted_messages();
-                        if current_accepted_messages != accepted_messages {
-                            accepted_messages = current_accepted_messages;
+                        let current_block = self.block_handler.latest_block();
+                        if current_block > latest_block {
+                            latest_block = current_block;
                             last_activity = tokio::time::Instant::now();
                         }
                         for peer in &static_peers {
@@ -112,7 +112,7 @@ impl GossipService {
                     event = swarm.select_next_some() => {
                         match event {
                             SwarmEvent::Behaviour(event) => event.handle(&mut swarm, &self.block_handler),
-                            other => tracing::info!("swarm event: {:?}", other),
+                            other => tracing::debug!("swarm event: {:?}", other),
                         }
                     },
                 }

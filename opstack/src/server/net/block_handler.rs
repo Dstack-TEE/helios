@@ -4,14 +4,14 @@ use alloy::primitives::Address;
 use libp2p::gossipsub::{IdentTopic, Message, MessageAcceptance, TopicHash};
 use tokio::sync::mpsc::Sender;
 
-use crate::SequencerCommitment;
+use crate::{types::ExecutionPayload, SequencerCommitment};
 
 pub struct BlockHandler {
     chain_id: u64,
     signer: Address,
     commitment_sender: Sender<SequencerCommitment>,
     blocks_v3_topic: IdentTopic,
-    accepted_messages: AtomicU64,
+    latest_block: AtomicU64,
 }
 
 impl BlockHandler {
@@ -21,7 +21,7 @@ impl BlockHandler {
             signer,
             commitment_sender: sender,
             blocks_v3_topic: IdentTopic::new(format!("/optimism/{chain_id}/3/blocks")),
-            accepted_messages: AtomicU64::new(0),
+            latest_block: AtomicU64::new(0),
         }
     }
 
@@ -29,8 +29,9 @@ impl BlockHandler {
         vec![self.blocks_v3_topic.hash()]
     }
 
-    pub fn accepted_messages(&self) -> u64 {
-        self.accepted_messages.load(Ordering::Relaxed)
+    /// Highest block number among accepted commitments.
+    pub fn latest_block(&self) -> u64 {
+        self.latest_block.load(Ordering::Relaxed)
     }
 
     pub fn handle(&self, msg: Message) -> MessageAcceptance {
@@ -39,7 +40,10 @@ impl BlockHandler {
         };
 
         if commitment.verify(self.signer, self.chain_id).is_ok() {
-            self.accepted_messages.fetch_add(1, Ordering::Relaxed);
+            if let Ok(payload) = ExecutionPayload::try_from(&commitment) {
+                self.latest_block
+                    .fetch_max(payload.block_number, Ordering::Relaxed);
+            }
             _ = self.commitment_sender.try_send(commitment);
             MessageAcceptance::Accept
         } else {

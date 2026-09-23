@@ -88,8 +88,15 @@ impl OpStackClientBuilder {
                 load_external_fallback: None,
                 checkpoint: None,
                 verify_unsafe_signer: self.verify_unsafe_signer.unwrap_or_default(),
+                ethereum_consensus_rpc: None,
+                ethereum_execution_rpc: None,
+                max_head_age: None,
             }
         };
+
+        if config.verify_unsafe_signer && config.ethereum_execution_rpc.is_none() {
+            eyre::bail!("Ethereum execution rpc required to verify the unsafe signer");
+        }
 
         let consensus = ConsensusClient::new(&config);
 

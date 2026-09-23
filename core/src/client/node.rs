@@ -159,7 +159,7 @@ impl<N: NetworkSpec, C: Consensus<N::BlockResponse>, E: ExecutionProvider<N>> No
             .timestamp();
 
         let delay = timestamp.checked_sub(block_timestamp).unwrap_or_default();
-        if delay > 60 {
+        if delay > self.consensus.max_head_age() {
             return Err(ClientError::OutOfSync(delay));
         }
 

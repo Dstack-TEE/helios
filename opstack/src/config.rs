@@ -25,6 +25,9 @@ pub struct Config {
     pub load_external_fallback: Option<bool>,
     pub checkpoint: Option<B256>,
     pub verify_unsafe_signer: bool,
+    pub ethereum_consensus_rpc: Option<Url>,
+    pub ethereum_execution_rpc: Option<Url>,
+    pub max_head_age: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -110,7 +113,7 @@ impl From<Network> for NetworkConfig {
                         ..Default::default()
                     },
                 },
-                verify_unsafe_signer: false,
+                verify_unsafe_signer: true,
             },
             Network::OpMainnet => NetworkConfig {
                 consensus_rpc: Some(
