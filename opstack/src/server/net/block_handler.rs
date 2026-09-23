@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use alloy::primitives::Address;
 use libp2p::gossipsub::{IdentTopic, Message, MessageAcceptance, TopicHash};
 use tokio::sync::mpsc::Sender;
@@ -9,6 +11,7 @@ pub struct BlockHandler {
     signer: Address,
     commitment_sender: Sender<SequencerCommitment>,
     blocks_v3_topic: IdentTopic,
+    accepted_messages: AtomicU64,
 }
 
 impl BlockHandler {
@@ -18,11 +21,16 @@ impl BlockHandler {
             signer,
             commitment_sender: sender,
             blocks_v3_topic: IdentTopic::new(format!("/optimism/{chain_id}/3/blocks")),
+            accepted_messages: AtomicU64::new(0),
         }
     }
 
     pub fn topics(&self) -> Vec<TopicHash> {
         vec![self.blocks_v3_topic.hash()]
+    }
+
+    pub fn accepted_messages(&self) -> u64 {
+        self.accepted_messages.load(Ordering::Relaxed)
     }
 
     pub fn handle(&self, msg: Message) -> MessageAcceptance {
@@ -31,6 +39,7 @@ impl BlockHandler {
         };
 
         if commitment.verify(self.signer, self.chain_id).is_ok() {
+            self.accepted_messages.fetch_add(1, Ordering::Relaxed);
             _ = self.commitment_sender.try_send(commitment);
             MessageAcceptance::Accept
         } else {

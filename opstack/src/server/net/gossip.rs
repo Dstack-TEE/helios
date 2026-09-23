@@ -67,16 +67,36 @@ impl GossipService {
             .map(str::parse::<Multiaddr>)
             .collect::<Result<Vec<_>, _>>()?;
 
+        let idle_timeout = std::env::var("OP_NODE_P2P_STATIC_IDLE_TIMEOUT")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs);
+
         tokio::spawn(async move {
             let mut reconnect = tokio::time::interval(Duration::from_secs(5));
+            let mut last_activity = tokio::time::Instant::now();
+            let mut accepted_messages = self.block_handler.accepted_messages();
             loop {
                 select! {
                     _ = reconnect.tick() => {
+                        let current_accepted_messages = self.block_handler.accepted_messages();
+                        if current_accepted_messages != accepted_messages {
+                            accepted_messages = current_accepted_messages;
+                            last_activity = tokio::time::Instant::now();
+                        }
                         for peer in &static_peers {
                             if let Some(Protocol::P2p(id)) = peer.iter().last() {
                                 if let Ok(id) = PeerId::from_multihash(id) {
                                     swarm.behaviour_mut().gossipsub.add_explicit_peer(&id);
-                                    if swarm.is_connected(&id) { continue; }
+                                    if swarm.is_connected(&id) {
+                                        if idle_timeout.is_some_and(|timeout| last_activity.elapsed() >= timeout) {
+                                            tracing::warn!(%id, "static peer is idle; reconnecting");
+                                            _ = swarm.disconnect_peer_id(id);
+                                            last_activity = tokio::time::Instant::now();
+                                        }
+                                        continue;
+                                    }
                                 }
                             }
                             let _ = swarm.dial(peer.clone());
