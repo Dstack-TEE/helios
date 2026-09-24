@@ -176,18 +176,15 @@ impl Inner {
                 let age = now.saturating_sub(timestamp);
                 let number = payload.block_number;
 
-                {
-                    let block =
-                        payload_to_block(payload, B256::from_slice(&commitment.data[..32]))?;
-                    self.latest_block = Some(block.header.number);
-                    _ = self.block_send.send(block).await;
+                let block = payload_to_block(payload, B256::from_slice(&commitment.data[..32]))?;
+                self.latest_block = Some(block.header.number);
+                _ = self.block_send.send(block).await;
 
-                    tracing::debug!(
-                        "unsafe head updated: block={} age={}s",
-                        number,
-                        age.as_secs()
-                    );
-                }
+                tracing::debug!(
+                    "unsafe head updated: block={} age={}s",
+                    number,
+                    age.as_secs()
+                );
             }
         }
 

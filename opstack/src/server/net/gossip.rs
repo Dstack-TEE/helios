@@ -60,12 +60,15 @@ impl GossipService {
             .listen_on(multiaddr)
             .map_err(|_| eyre::eyre!("swarm listen failed"))?;
 
-        let peers = std::env::var("OP_NODE_P2P_STATIC").unwrap_or_default();
-        let static_peers = peers
+        let static_peers = std::env::var("OP_NODE_P2P_STATIC")
+            .unwrap_or_default()
             .split(',')
             .filter(|peer| !peer.is_empty())
-            .map(str::parse::<Multiaddr>)
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(parse_static_peer)
+            .collect::<Result<Vec<_>>>()?;
+        for (id, _) in &static_peers {
+            swarm.behaviour_mut().gossipsub.add_explicit_peer(id);
+        }
 
         let idle_timeout = std::env::var("OP_NODE_P2P_STATIC_IDLE_TIMEOUT")
             .ok()
@@ -75,31 +78,27 @@ impl GossipService {
 
         tokio::spawn(async move {
             let mut reconnect = tokio::time::interval(Duration::from_secs(5));
-            let mut last_activity = tokio::time::Instant::now();
+            let mut last_progress = tokio::time::Instant::now();
             let mut latest_block = self.block_handler.latest_block();
             loop {
                 select! {
                     _ = reconnect.tick() => {
-                        let current_block = self.block_handler.latest_block();
-                        if current_block > latest_block {
-                            latest_block = current_block;
-                            last_activity = tokio::time::Instant::now();
+                        let block = self.block_handler.latest_block();
+                        if block > latest_block {
+                            latest_block = block;
+                            last_progress = tokio::time::Instant::now();
                         }
-                        for peer in &static_peers {
-                            if let Some(Protocol::P2p(id)) = peer.iter().last() {
-                                if let Ok(id) = PeerId::from_multihash(id) {
-                                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&id);
-                                    if swarm.is_connected(&id) {
-                                        if idle_timeout.is_some_and(|timeout| last_activity.elapsed() >= timeout) {
-                                            tracing::warn!(%id, "static peer is idle; reconnecting");
-                                            _ = swarm.disconnect_peer_id(id);
-                                            last_activity = tokio::time::Instant::now();
-                                        }
-                                        continue;
-                                    }
-                                }
+                        let idle = idle_timeout.is_some_and(|timeout| last_progress.elapsed() >= timeout);
+                        if idle {
+                            last_progress = tokio::time::Instant::now();
+                        }
+                        for (id, addr) in &static_peers {
+                            if !swarm.is_connected(id) {
+                                _ = swarm.dial(addr.clone());
+                            } else if idle {
+                                tracing::warn!(%id, "static peer is idle; reconnecting");
+                                _ = swarm.disconnect_peer_id(*id);
                             }
-                            let _ = swarm.dial(peer.clone());
                         }
                     },
                     peer = peer_recv.recv() => {
@@ -110,9 +109,8 @@ impl GossipService {
                         }
                     },
                     event = swarm.select_next_some() => {
-                        match event {
-                            SwarmEvent::Behaviour(event) => event.handle(&mut swarm, &self.block_handler),
-                            other => tracing::debug!("swarm event: {:?}", other),
+                        if let SwarmEvent::Behaviour(event) = event {
+                            event.handle(&mut swarm, &self.block_handler);
                         }
                     },
                 }
@@ -121,6 +119,15 @@ impl GossipService {
 
         Ok(())
     }
+}
+
+fn parse_static_peer(peer: &str) -> Result<(PeerId, Multiaddr)> {
+    let addr: Multiaddr = peer.parse()?;
+    let Some(Protocol::P2p(id)) = addr.iter().last() else {
+        eyre::bail!("static peer {peer} has no /p2p peer ID");
+    };
+    let id = PeerId::from_multihash(id).map_err(|_| eyre::eyre!("invalid peer ID in {peer}"))?;
+    Ok((id, addr))
 }
 
 fn socket_to_multiaddr(socket: SocketAddr) -> Multiaddr {
@@ -137,7 +144,7 @@ fn socket_to_multiaddr(socket: SocketAddr) -> Multiaddr {
 fn compute_message_id(msg: &Message) -> MessageId {
     let decoded = snap::raw::decompress_len(&msg.data)
         .ok()
-        .filter(|len| *len <= 10 * 1024 * 1024)
+        .filter(|len| *len <= crate::MAX_GOSSIP_SIZE)
         .and_then(|_| snap::raw::Decoder::new().decompress_vec(&msg.data).ok());
     let topic = msg.topic.as_str().as_bytes();
     let mut hasher = Sha256::new();
@@ -180,7 +187,7 @@ impl Behaviour {
         let ping = ping::Behaviour::default();
 
         let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .max_transmit_size(10 * 1024 * 1024)
+            .max_transmit_size(crate::MAX_GOSSIP_SIZE)
             .mesh_n(8)
             .mesh_n_low(6)
             .mesh_n_high(12)
@@ -216,7 +223,6 @@ impl Behaviour {
 }
 
 /// The type of message received
-#[derive(Debug)]
 enum Event {
     /// Represents a [ping::Event]
     #[allow(dead_code)]

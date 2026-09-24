@@ -20,6 +20,9 @@ pub mod spec;
 pub mod types;
 
 pub use builder::OpStackClientBuilder;
+
+/// Maximum size of a gossiped block, matching op-node.
+pub const MAX_GOSSIP_SIZE: usize = 10 * 1024 * 1024;
 pub type OpStackClient = HeliosClient<OpStack>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,7 +34,7 @@ pub struct SequencerCommitment {
 impl SequencerCommitment {
     pub fn new(data: &[u8]) -> Result<Self> {
         eyre::ensure!(
-            snap::raw::decompress_len(data)? <= 10 * 1024 * 1024,
+            snap::raw::decompress_len(data)? <= MAX_GOSSIP_SIZE,
             "oversized payload"
         );
         let mut decoder = snap::raw::Decoder::new();
