@@ -20,6 +20,9 @@ pub mod spec;
 pub mod types;
 
 pub use builder::OpStackClientBuilder;
+
+/// Maximum size of a gossiped block, matching op-node.
+pub const MAX_GOSSIP_SIZE: usize = 10 * 1024 * 1024;
 pub type OpStackClient = HeliosClient<OpStack>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,10 +33,17 @@ pub struct SequencerCommitment {
 
 impl SequencerCommitment {
     pub fn new(data: &[u8]) -> Result<Self> {
+        eyre::ensure!(
+            snap::raw::decompress_len(data)? <= MAX_GOSSIP_SIZE,
+            "oversized payload"
+        );
         let mut decoder = snap::raw::Decoder::new();
         let decompressed = decoder.decompress_vec(data)?;
 
-        let signature = Signature::try_from(&decompressed[..65])?;
+        let signature_bytes = decompressed
+            .get(..65)
+            .ok_or_else(|| eyre::eyre!("truncated signature"))?;
+        let signature = Signature::try_from(signature_bytes)?;
         let data = Bytes::from(decompressed[65..].to_vec());
 
         Ok(SequencerCommitment { data, signature })
@@ -56,7 +66,10 @@ impl TryFrom<&SequencerCommitment> for ExecutionPayload {
     type Error = eyre::Report;
 
     fn try_from(value: &SequencerCommitment) -> Result<Self> {
-        let payload_bytes = &value.data[32..];
+        let payload_bytes = value
+            .data
+            .get(32..)
+            .ok_or_else(|| eyre::eyre!("truncated payload envelope"))?;
         ExecutionPayload::from_ssz_bytes(payload_bytes).map_err(|_| eyre::eyre!("decode failed"))
     }
 }

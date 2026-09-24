@@ -239,6 +239,26 @@ struct OpStackArgs {
         help = "Enable fallback for weak subjectivity checkpoint. Use if --ethereum-checkpoint fails."
     )]
     load_external_fallback: bool,
+    #[arg(
+        long,
+        env,
+        value_parser = parse_url,
+        help = "Ethereum consensus RPC used to verify the unsafe signer"
+    )]
+    ethereum_consensus_rpc: Option<Url>,
+    #[arg(
+        long,
+        env,
+        value_parser = parse_url,
+        help = "Ethereum execution RPC used to prove the unsafe signer"
+    )]
+    ethereum_execution_rpc: Option<Url>,
+    #[arg(
+        long,
+        env,
+        help = "Maximum accepted age of the latest block, in seconds"
+    )]
+    max_head_age: Option<u64>,
 }
 
 impl OpStackArgs {
@@ -290,6 +310,18 @@ impl OpStackArgs {
 
         if let Some(checkpoint) = self.checkpoint {
             user_dict.insert("checkpoint", Value::from(hex::encode(checkpoint)));
+        }
+
+        if let Some(rpc) = &self.ethereum_consensus_rpc {
+            user_dict.insert("ethereum_consensus_rpc", Value::from(rpc.to_string()));
+        }
+
+        if let Some(rpc) = &self.ethereum_execution_rpc {
+            user_dict.insert("ethereum_execution_rpc", Value::from(rpc.to_string()));
+        }
+
+        if let Some(age) = self.max_head_age {
+            user_dict.insert("max_head_age", Value::from(age));
         }
 
         Serialized::from(user_dict, &self.network)

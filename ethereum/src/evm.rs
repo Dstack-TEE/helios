@@ -129,6 +129,7 @@ impl<E: ExecutionProvider<Ethereum>> EthereumEvm<E> {
         cfg.spec = get_spec_id_for_block_timestamp(block.header.timestamp, &self.fork_schedule);
         cfg.chain_id = self.chain_id;
         cfg.disable_block_gas_limit = !validate_tx;
+        cfg.tx_gas_limit_cap = (!validate_tx).then_some(u64::MAX);
         cfg.disable_eip3607 = !validate_tx;
         cfg.disable_base_fee = !validate_tx;
         cfg.disable_nonce_check = !validate_tx;
@@ -188,6 +189,7 @@ impl<E: ExecutionProvider<Ethereum>> EthereumEvm<E> {
 
         BlockEnv {
             number: U256::from(block.header.number()),
+            slot_num: 0,
             beneficiary: block.header.beneficiary(),
             timestamp: U256::from(block.header.timestamp()),
             gas_limit: block.header.gas_limit(),

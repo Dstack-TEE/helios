@@ -73,6 +73,9 @@ impl OpStackClient {
             load_external_fallback: None,
             checkpoint: None,
             verify_unsafe_signer: false,
+            ethereum_consensus_rpc: None,
+            ethereum_execution_rpc: None,
+            max_head_age: None,
         };
 
         let inner = map_err(OpStackClientBuilder::new().config(config).build())?;

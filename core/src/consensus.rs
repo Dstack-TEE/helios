@@ -15,6 +15,10 @@ pub trait Consensus<
     fn checkpoint_recv(&self) -> Option<watch::Receiver<Option<B256>>>;
     fn expected_highest_block(&self) -> u64;
     fn chain_id(&self) -> u64;
+    /// Maximum accepted age of the latest block, in seconds.
+    fn max_head_age(&self) -> u64 {
+        60
+    }
     fn shutdown(&self) -> Result<()>;
     async fn wait_synced(&self) -> Result<()>;
 }

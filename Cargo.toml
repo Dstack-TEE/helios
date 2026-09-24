@@ -54,7 +54,7 @@ alloy = { version = "1.0.37", features = [
 ] }
 alloy-trie = { version = "0.9.1", features = ["ethereum"] }
 op-alloy-rpc-types = "0.20.0"
-revm = { version = "29.0.1", default-features = false, features = [
+revm = { version = "38.0.0", default-features = false, features = [
     "std",
     "serde",
     "optional_block_gas_limit",

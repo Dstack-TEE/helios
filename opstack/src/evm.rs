@@ -132,6 +132,7 @@ impl<E: ExecutionProvider<OpStack>> OpStackEvm<E> {
         cfg.spec = get_spec_id_for_block_timestamp(block.header.timestamp, &self.fork_schedule);
         cfg.chain_id = self.chain_id;
         cfg.disable_block_gas_limit = !validate_tx;
+        cfg.tx_gas_limit_cap = (!validate_tx).then_some(u64::MAX);
         cfg.disable_eip3607 = !validate_tx;
         cfg.disable_base_fee = !validate_tx;
         cfg.disable_nonce_check = !validate_tx;
@@ -191,6 +192,7 @@ impl<E: ExecutionProvider<OpStack>> OpStackEvm<E> {
 
         BlockEnv {
             number: U256::from(block.header.number()),
+            slot_num: 0,
             beneficiary: block.header.beneficiary(),
             timestamp: U256::from(block.header.timestamp()),
             gas_limit: block.header.gas_limit(),
@@ -203,7 +205,11 @@ impl<E: ExecutionProvider<OpStack>> OpStackEvm<E> {
 }
 
 pub fn get_spec_id_for_block_timestamp(timestamp: u64, fork_schedule: &ForkSchedule) -> OpSpecId {
-    if timestamp >= fork_schedule.isthmus_timestamp {
+    if timestamp >= fork_schedule.karst_timestamp {
+        OpSpecId::KARST
+    } else if timestamp >= fork_schedule.jovian_timestamp {
+        OpSpecId::JOVIAN
+    } else if timestamp >= fork_schedule.isthmus_timestamp {
         OpSpecId::ISTHMUS
     } else if timestamp >= fork_schedule.holocene_timestamp {
         OpSpecId::HOLOCENE
@@ -221,5 +227,32 @@ pub fn get_spec_id_for_block_timestamp(timestamp: u64, fork_schedule: &ForkSched
         OpSpecId::BEDROCK
     } else {
         OpSpecId::default()
+    }
+}
+
+#[cfg(test)]
+mod phala_fork_tests {
+    use super::*;
+    use crate::config::{Network, NetworkConfig};
+
+    #[test]
+    fn selects_phala_forks_at_exact_activation() {
+        let forks = NetworkConfig::from(Network::Phala).chain.forks;
+        assert_eq!(
+            get_spec_id_for_block_timestamp(forks.jovian_timestamp - 1, &forks),
+            OpSpecId::ISTHMUS
+        );
+        assert_eq!(
+            get_spec_id_for_block_timestamp(forks.jovian_timestamp, &forks),
+            OpSpecId::JOVIAN
+        );
+        assert_eq!(
+            get_spec_id_for_block_timestamp(forks.karst_timestamp - 1, &forks),
+            OpSpecId::JOVIAN
+        );
+        assert_eq!(
+            get_spec_id_for_block_timestamp(forks.karst_timestamp, &forks),
+            OpSpecId::KARST
+        );
     }
 }
